@@ -1,0 +1,117 @@
+# This file is a template, and might need editing before it works on your project.
+# To contribute improvements to CI/CD templates, please follow the Development guide at:
+# https://docs.gitlab.com/ee/development/cicd/templates.html
+# This specific template is located at:
+# https://gitlab.com/gitlab-org/gitlab/-/blob/master/lib/gitlab/ci/templates/Docker.gitlab-ci.yml
+
+# Build a Docker image with CI/CD and push to the GitLab registry.
+# Docker-in-Docker documentation: https://docs.gitlab.com/ee/ci/docker/using_docker_build.html
+#
+# This template uses one generic job with conditional builds
+# for the default branch and all other (MR) branches.
+
+stages:
+  - setup
+  - build-and-test
+  - deployment
+  - pages
+
+# stage: setup
+
+setup:
+  stage: setup
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+  artifacts:
+    paths:
+      - node_modules/
+  script:
+    - yarn
+
+docker-build:
+  # Use the official docker image.
+  image: docker:latest
+  stage: build-and-test
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+  # Default branch leaves tag empty (= latest tag)
+  # All other branches are tagged with the escaped branch name (commit ref slug)
+  script:
+    - |
+      if [[ "$CI_COMMIT_BRANCH" == "$CI_DEFAULT_BRANCH" ]]; then
+        tag=""
+        echo "Running on default branch '$CI_DEFAULT_BRANCH': tag = 'latest'"
+      else
+        tag=":$CI_COMMIT_REF_SLUG"
+        echo "Running on branch '$CI_COMMIT_BRANCH': tag = $tag"
+      fi
+    - docker build --pull -t "$CI_REGISTRY_IMAGE${tag}" .
+    - docker push "$CI_REGISTRY_IMAGE${tag}"
+  # Run this job in a branch where a Dockerfile exists
+  rules:
+    - if: $CI_COMMIT_BRANCH
+      exists:
+        - Dockerfile
+
+storybook:
+  stage: build-and-test
+  artifacts:
+    expire_in: 2 weeks
+    when: always
+    paths:
+      - storybook/
+  script:
+    - yarn build-storybook --output-dir storybook
+
+# stage: deployment (here I deploy my app to specific stages or other artefacts like storybook)
+
+deploy-storybook:
+  stage: deployment
+  script:
+    - echo "Enjoy the day. 🥳 Every job needs a script, but this job was just created to configure an environment."
+  environment:
+    name: storybook/$CI_COMMIT_REF_SLUG
+    url: https://your-orga.gitlab.io/your-group/your-project/$CI_COMMIT_REF_SLUG/storybook/
+    on_stop: remove-storybook
+  only:
+    - branches
+
+remove-storybook:
+  stage: deployment
+  cache:
+    key: 'my-storybook'
+    paths:
+      - public
+  script:
+    - rm -rf "public/$CI_COMMIT_REF_SLUG/storybook"
+  when: manual
+  variables:
+    GIT_STRATEGY: none # needed to prevent "Couldn't find remote ref" error
+  environment:
+    name: storybook/$CI_COMMIT_REF_SLUG
+    action: stop
+
+# stage: pages (the stage name is custom, but the job NEEDS to be named pages)
+
+pages:
+  stage: pages
+  cache:
+    key: 'my-storybook'
+    paths:
+      - public
+  script:
+    - if [ "$CI_COMMIT_REF_NAME" = "master" ]; then
+      mkdir -p public;
+      touch public/index.html;
+      echo "<!DOCTYPE HTML><script>window.location.href = 'https://bsc.gitlab.io/inb/iechor/software-observatory/observatory-fe/dev/storybook'</script>" > public/index.html;
+      fi;
+    - rm -rf "public/$CI_COMMIT_REF_SLUG"
+    - mkdir -p "public/$CI_COMMIT_REF_SLUG";
+    - mv storybook "public/$CI_COMMIT_REF_SLUG"
+  artifacts:
+    paths:
+      - public
